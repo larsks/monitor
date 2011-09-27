@@ -213,6 +213,10 @@ int main (int argc, char **argv) {
 	}
 
 	loop(argc-optind, argv+optind);
+
+	if (pidfile)
+		unlink(pidfile);
+
 	return 0;
 }
 
