@@ -11,7 +11,7 @@
 #include <getopt.h>
 #include <string.h>
 #include <syslog.h>
-
+#include <signal.h>
 #include <sys/wait.h>
 
 #define	OPT_HELP	'h'
@@ -34,11 +34,19 @@ void usage (FILE *out) {
 	fprintf(out, "monitor: usage: monitor [-p pidfile] [-d dir] [-f] command [options]\n");
 }
 
+void sighandler(int sig) {
+}
+
 void loop (int argc, char **argv) {
 	pid_t	pid, pid2;
 	int	status;
 	int	interval = 0;
 	time_t	lastrestart = 0;
+
+	signal(SIGHUP, sighandler);
+	signal(SIGINT, sighandler);
+	signal(SIGTERM, sighandler);
+	signal(SIGQUIT, sighandler);
 
 	syslog(LOG_DEBUG, "entering loop.");
 	while (1) {
@@ -84,7 +92,9 @@ void loop (int argc, char **argv) {
 				if (interval) {
 					syslog(LOG_INFO, "%s: waiting %d seconds before restart.",
 							argv[0], interval);
+					signal(SIGINT, SIG_DFL);
 					sleep(interval);
+					signal(SIGINT, sighandler);
 				}
 
 				lastrestart = time(NULL);
