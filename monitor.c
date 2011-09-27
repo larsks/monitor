@@ -46,12 +46,12 @@ void usage (FILE *out) {
 void signal_and_quit (int sig) {
 	flag_quit = 1;
 	syslog(LOG_INFO, "caught signal %d.", sig);
-	kill(child_pid, sig);
+	if (child_pid) kill(child_pid, sig);
 }
 
 void signal_and_restart (int sig) {
 	syslog(LOG_INFO, "caught signal %d.", sig);
-	kill(child_pid, sig);
+	if (child_pid) kill(child_pid, sig);
 }
 
 void child_died(int sig) {
@@ -71,12 +71,14 @@ void child_died(int sig) {
 	} else if (WIFSIGNALED(status)) {
 		syslog(LOG_ERR, "child exited from signal = %d", WTERMSIG(status));
 	}
+
+	child_pid = 0;
 }
 
 wait_for_exit () {
 	int retries = 0;
 
-	while (! flag_child_died) {
+	while (child_pid && ! flag_child_died) {
 		if (retries++ >= MAX_RETRIES)
 			kill(child_pid, SIGKILL);
 
@@ -131,13 +133,20 @@ void loop (int argc, char **argv) {
 
 		// If the child process exited with an error, activate
 		// exponential backup mechanism.
-		if (! flag_received_signal && (time(NULL) - lastrestart < maxinterval)) {
-			syslog(LOG_INFO, "activating expoential backup");
+		if (! flag_quit && ! flag_received_signal) {
+			if (time(NULL) - lastrestart < maxinterval) {
+				syslog(LOG_INFO, "backing off for %d seconds.", interval);
+				sleep(interval);
+				interval = interval >= maxinterval ? maxinterval : 2*interval;
+			} else {
+				interval = 1;
+			}
 		}
 
 		lastrestart = time(NULL);
 	}
 
+cleanup:
 	wait_for_exit();
 }
 
