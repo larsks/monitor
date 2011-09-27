@@ -51,8 +51,12 @@ foreground, monitor will also log to stderr.
 Signals
 =======
 
-If monitor receives ``SIGTERM``, it will pass ``SIGTERM`` on to the
-child command before exiting.
+``SIGINT`` and ``SIGHUP`` are ignored by montor but will be passed on to
+the child process.
+
+``SIGTERM`` and ``SIGQUIT`` will be passed on to the child process.
+Monitor will wait for the child process to exit and will send a ``SIGKILL``
+if the process does not exit after a few seconds.  Monitor will then exit.
 
 License
 =======
