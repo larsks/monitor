@@ -20,15 +20,33 @@ Options
 
 - -p *pidfile*
 
-  Write monitor's process id to *pidfile*.
+  Write monitor's process id to *pidfile*.  Relative paths will be relative
+  to *workdir*.
 
-- -d *dir*
+  The *pidfile* is removed when monitor exits.
 
-  Change to *dir* before starting your command.
+- -d *workdir*
+
+  Change to *workdir* before starting your command.
 
 - -f
 
   Run in the foreground.
+
+- -I *interval*
+
+  If the child process exits before running at least *interval* seconds,
+  activate the exponential backoff mechanism.  This will cause monitor to
+  sleep for 1 seconds before restarting the command, then 2 seconds, and so
+  forth up to *interval* seconds.
+
+  The default *interval* is 60.
+
+Logging
+=======
+
+Monitor logs to the syslog ``DAEMON`` facility.  When running the for
+foreground, monitor will also log to stderr.
 
 Signals
 =======
