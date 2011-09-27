@@ -63,7 +63,7 @@ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 
-This software includes a soure file from daemonize, by Brian M. Clapper,
+This software includes a soure file from daemonize_, by Brian M. Clapper,
 which requires the following notice:
 
   Copyright 2003-2011 Brian M. Clapper.
@@ -98,4 +98,4 @@ which requires the following notice:
 .. _daemontools: http://cr.yp.to/daemontools.html
 .. _runit: http://smarden.org/runit/
 .. _upstart: http://upstart.ubuntu.com/
-
+.. _daemonize: http://software.clapper.org/daemonize/
