@@ -14,6 +14,8 @@
 #include <signal.h>
 #include <sys/wait.h>
 
+#define MAX_RETRIES	2
+
 #define	OPT_HELP	'h'
 #define OPT_PIDFILE	'p'
 #define OPT_FOREGROUND	'f'
@@ -30,80 +32,113 @@ int	foreground	= 0;
 int	alwaysrestart	= 0;
 int	maxinterval	= 60;
 
+int	flag_child_died	= 0;
+int	flag_received_signal = 0;
+int	flag_quit	= 0;
+
+pid_t	child_pid;
+char	*child_name	= NULL;
+
 void usage (FILE *out) {
 	fprintf(out, "monitor: usage: monitor [-p pidfile] [-d dir] [-f] command [options]\n");
 }
 
-void sighandler(int sig) {
+void signal_and_quit (int sig) {
+	flag_quit = 1;
+	syslog(LOG_INFO, "caught signal %d.", sig);
+	kill(child_pid, sig);
+}
+
+void signal_and_restart (int sig) {
+	syslog(LOG_INFO, "caught signal %d.", sig);
+	kill(child_pid, sig);
+}
+
+void child_died(int sig) {
+	pid_t	pid;
+	int	status;
+
+	flag_child_died = 1;
+
+	pid = wait(&status);
+
+	if (status == 0) {
+		syslog(LOG_INFO, "child exited with status = %d", WEXITSTATUS(status));
+		if (! alwaysrestart)
+			flag_quit = 1;
+	} else if (WIFEXITED(status)) {
+		syslog(LOG_ERR, "child exited with status = %d", WEXITSTATUS(status));
+	} else if (WIFSIGNALED(status)) {
+		syslog(LOG_ERR, "child exited from signal = %d", WTERMSIG(status));
+	}
+}
+
+wait_for_exit () {
+	int retries = 0;
+
+	while (! flag_child_died) {
+		if (retries++ >= MAX_RETRIES)
+			kill(child_pid, SIGKILL);
+
+		syslog(LOG_INFO, "%s: waiting for exit.", child_name);
+		sleep(1);
+	}
 }
 
 void loop (int argc, char **argv) {
-	pid_t	pid, pid2;
 	int	status;
 	int	interval = 0;
 	time_t	lastrestart = 0;
 
-	signal(SIGHUP, sighandler);
-	signal(SIGINT, sighandler);
-	signal(SIGTERM, sighandler);
-	signal(SIGQUIT, sighandler);
+	child_name = argv[0];
+
+	// SIGHUP and SIGINT get passed on to the
+	// child process.
+	signal(SIGHUP, signal_and_restart);
+	signal(SIGINT, signal_and_restart);
+
+	// SIGTERM and SIGQUIT will get passed on to 
+	// the child process and cause monitor to exit.
+	signal(SIGTERM, signal_and_quit);
+	signal(SIGQUIT, signal_and_quit);
+
+	// We get this when the child process
+	// dies.
+	signal(SIGCHLD, child_died);
 
 	syslog(LOG_DEBUG, "entering loop.");
-	while (1) {
-		pid = fork();
+	while (! flag_quit) {
+		flag_child_died = 0;
+		flag_received_signal = 0;
 
-		switch (pid) {
+		child_pid = fork();
+
+		switch (child_pid) {
 			case -1:
 				syslog(LOG_ERR, "fork() failed: %m");
 				exit(1);
 			case 0:
-				syslog(LOG_INFO, "%s: starting", argv[0]);
+				syslog(LOG_INFO, "%s: starting", child_name);
 				execvp(argv[0], argv);
 				break;
-			default:
-				pid2 = waitpid(pid, &status, 0);
-
-				if (pid2 == -1) {
-					syslog(LOG_ERR, "waitpid failed: %m");
-					exit(1);
-				}
-
-				if (status == 0 && ! alwaysrestart)
-					goto loop_exit;
-
-				if (WIFSIGNALED(status)) {
-					syslog(LOG_ERR, "%s: exited due to signal %d",
-							argv[0], WTERMSIG(status));
-				} else if (WIFEXITED(status)) {
-					syslog(LOG_ERR, "%s: exited with status %d",
-							argv[0], WEXITSTATUS(status));
-				}
-
-				if (time(NULL) - lastrestart <= maxinterval) {
-					interval = interval
-						? ( interval >= maxinterval
-							? maxinterval
-							: 2 * interval )
-						: 1;
-				} else {
-					interval = 0;
-				}
-
-				if (interval) {
-					syslog(LOG_INFO, "%s: waiting %d seconds before restart.",
-							argv[0], interval);
-					signal(SIGINT, SIG_DFL);
-					sleep(interval);
-					signal(SIGINT, sighandler);
-				}
-
-				lastrestart = time(NULL);
-				break;
 		}
+
+		// only the parent gets this far.
+		while (! flag_quit) {
+			pause();
+			if (flag_child_died) break;
+		}
+
+		// If the child process exited with an error, activate
+		// exponential backup mechanism.
+		if (! flag_received_signal && (time(NULL) - lastrestart < maxinterval)) {
+			syslog(LOG_INFO, "activating expoential backup");
+		}
+
+		lastrestart = time(NULL);
 	}
 
-loop_exit:
-	return;
+	wait_for_exit();
 }
 
 int main (int argc, char **argv) {
