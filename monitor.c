@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <string.h>
+#include <syslog.h>
 
 #include <sys/wait.h>
 
@@ -18,10 +19,12 @@
 #define OPT_FOREGROUND	'f'
 #define OPT_RESTART	'R'
 #define OPT_MAXINTERVAL	'I'
+#define OPT_WORKDIR	'd'
 
-#define OPTSTRING	"hp:fRI:"
+#define OPTSTRING	"hp:fRI:d:"
 
 char	*pidfile	= NULL;
+char	*workdir	= NULL;
 FILE	*pidfd		= NULL;
 int	foreground	= 0;
 int	alwaysrestart	= 0;
@@ -31,42 +34,38 @@ void usage (FILE *out) {
 	fprintf(out, "monitor: usage: monitor [-p pidfile] [-d dir] [-f] command [options]\n");
 }
 
-void die(char *msg) {
-	fprintf(stderr, "monitor: ERROR: %s\n", msg);
-	exit(1);
-}
-
 void loop (int argc, char **argv) {
 	pid_t	pid, pid2;
 	int	status;
 	int	interval = 0;
 	time_t	lastrestart = 0;
 
-	fprintf(stderr, "entering loop\n");
+	syslog(LOG_DEBUG, "entering loop.");
 	while (1) {
 		pid = fork();
 
 		switch (pid) {
 			case -1:
+				syslog(LOG_ERR, "fork() failed: %m");
 				exit(1);
 			case 0:
+				syslog(LOG_INFO, "%s: starting", argv[0]);
 				execvp(argv[0], argv);
 				break;
 			default:
 				pid2 = waitpid(pid, &status, 0);
-				fprintf(stderr, "got status = %d\n", status);
+
 				if (status == 0)
 					goto loop_exit;
 
 				if (WIFSIGNALED(status)) {
-					fprintf(stderr, "process exited due to signal = %d\n",
-							WTERMSIG(status));
+					syslog(LOG_ERR, "%s: exited due to signal %d",
+							argv[0], WTERMSIG(status));
 				} else if (WIFEXITED(status)) {
-					fprintf(stderr, "process exited with status = %d\n",
-							WEXITSTATUS(status));
+					syslog(LOG_ERR, "%s: exited with status %d",
+							argv[0], WEXITSTATUS(status));
 				}
 
-				fprintf(stderr, "%d %d %d\n", time(NULL), (int)lastrestart, interval);
 				if (time(NULL) - lastrestart <= maxinterval) {
 					interval = interval
 						? ( interval >= maxinterval
@@ -78,7 +77,8 @@ void loop (int argc, char **argv) {
 				}
 
 				if (interval) {
-					fprintf(stderr,"sleeping %d seconds before restart.\n", interval);
+					syslog(LOG_INFO, "%s: waiting %d seconds before restart.",
+							argv[0], interval);
 					sleep(interval);
 				}
 
@@ -111,15 +111,32 @@ int main (int argc, char **argv) {
 			case OPT_MAXINTERVAL:
 				maxinterval = atoi(optarg);
 				break;
+			case OPT_WORKDIR:
+				workdir = strdup(optarg);
+				break;
+
 			case '?':
 				usage(stderr);
 				exit(2);
 		}
 	}
 
-	if (pidfile)
-		if ((pidfd = fopen(pidfile, "w")) == NULL)
-			die("Failed to open PID file.");
+	openlog("monitor", LOG_PERROR, LOG_DAEMON);
+
+	if (workdir && chdir(workdir) != 0) {
+		syslog(LOG_ERR, "%s: failed to chdir: %m",
+				workdir);
+		exit(1);
+	}
+
+	// Open the pidfile before we fork so that we can print a message
+	// to stderr.
+	if (pidfile) {
+		if ((pidfd = fopen(pidfile, "w")) == NULL) {
+			syslog(LOG_ERR, "failed to open pid file \"%s\": %m", pidfile);
+			exit (1);
+		}
+	}
 
 	if (! foreground)
 		daemon(1, 0);
