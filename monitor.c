@@ -55,7 +55,12 @@ void loop (int argc, char **argv) {
 			default:
 				pid2 = waitpid(pid, &status, 0);
 
-				if (status == 0)
+				if (pid2 == -1) {
+					syslog(LOG_ERR, "waitpid failed: %m");
+					exit(1);
+				}
+
+				if (status == 0 && ! alwaysrestart)
 					goto loop_exit;
 
 				if (WIFSIGNALED(status)) {
@@ -123,14 +128,15 @@ int main (int argc, char **argv) {
 
 	openlog("monitor", LOG_PERROR, LOG_DAEMON);
 
+	// try to chdir to work directory.
 	if (workdir && chdir(workdir) != 0) {
 		syslog(LOG_ERR, "%s: failed to chdir: %m",
 				workdir);
 		exit(1);
 	}
 
-	// Open the pidfile before we fork so that we can print a message
-	// to stderr.
+	// open (but don't write) pid file.  We open it here so that we can
+	// error out and exit if the pid file isn't writable.
 	if (pidfile) {
 		if ((pidfd = fopen(pidfile, "w")) == NULL) {
 			syslog(LOG_ERR, "failed to open pid file \"%s\": %m", pidfile);
