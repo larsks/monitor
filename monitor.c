@@ -39,7 +39,7 @@ void die(char *msg) {
 void loop (int argc, char **argv) {
 	pid_t	pid, pid2;
 	int	status;
-	int	interval = 2;
+	int	interval = 0;
 	time_t	lastrestart = 0;
 
 	fprintf(stderr, "entering loop\n");
@@ -67,13 +67,18 @@ void loop (int argc, char **argv) {
 				}
 
 				fprintf(stderr, "%d %d %d\n", time(NULL), (int)lastrestart, interval);
-				if (time(NULL) - lastrestart <= interval) {
-					fprintf(stderr,"sleeping %d seconds before restart.\n", interval);
+				if (time(NULL) - lastrestart <= maxinterval) {
 					interval = interval
 						? ( interval >= maxinterval
 							? maxinterval
 							: 2 * interval )
 						: 1;
+				} else {
+					interval = 0;
+				}
+
+				if (interval) {
+					fprintf(stderr,"sleeping %d seconds before restart.\n", interval);
 					sleep(interval);
 				}
 
