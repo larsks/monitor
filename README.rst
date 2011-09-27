@@ -3,7 +3,7 @@ would like to restart something when it fails but aren't looking
 for the complexity of solution such as DaemonTools_, Runit_,
 Upstart_, and similar.
 
-You run it like this:
+You run it like this::
 
   monitor command [options]
 
