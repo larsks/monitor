@@ -63,13 +63,16 @@ void child_died(int sig) {
 	pid = wait(&status);
 
 	if (status == 0) {
-		syslog(LOG_INFO, "child exited with status = %d", WEXITSTATUS(status));
+		syslog(LOG_INFO, "%s: exited with status = %d",
+				child_name, WEXITSTATUS(status));
 		if (! alwaysrestart)
 			flag_quit = 1;
 	} else if (WIFEXITED(status)) {
-		syslog(LOG_ERR, "child exited with status = %d", WEXITSTATUS(status));
+		syslog(LOG_ERR, "%s: exited with status = %d",
+				child_name, WEXITSTATUS(status));
 	} else if (WIFSIGNALED(status)) {
-		syslog(LOG_ERR, "child exited from signal = %d", WTERMSIG(status));
+		syslog(LOG_ERR, "%s: exited from signal = %d",
+				child_name, WTERMSIG(status));
 	}
 
 	child_pid = 0;
@@ -135,9 +138,12 @@ void loop (int argc, char **argv) {
 		// exponential backup mechanism.
 		if (! flag_quit && ! flag_received_signal) {
 			if (time(NULL) - lastrestart < maxinterval) {
-				syslog(LOG_INFO, "backing off for %d seconds.", interval);
+				syslog(LOG_INFO, "%s: backing off for %d seconds.",
+						child_name, interval);
 				sleep(interval);
-				interval = interval >= maxinterval ? maxinterval : 2*interval;
+				interval = interval >= maxinterval
+					? maxinterval
+					: 2*interval;
 			} else {
 				interval = 1;
 			}
