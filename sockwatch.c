@@ -6,6 +6,8 @@
 #include <sys/un.h>
 #include <sys/select.h>
 
+#define BUFLEN 4192
+
 int main(int argc, char **argv) {
 	int			sockfd,
 				clientfd;
@@ -35,8 +37,9 @@ int main(int argc, char **argv) {
 		timeout.tv_usec=0;
 		FD_ZERO(&readfds);
 		FD_SET(sockfd, &readfds);
-		if clientfd: FD_SET(clientfd, &readfds);
-		res = select(sockfd+1, &readfds, NULL, NULL, &timeout);
+		if (clientfd) FD_SET(clientfd, &readfds);
+		res = select(clientfd ? clientfd+1 : sockfd+1,
+				&readfds, NULL, NULL, &timeout);
 		printf("got res=%d\n", res);
 
 		switch (res) {
@@ -44,10 +47,29 @@ int main(int argc, char **argv) {
 				 	exit(1);
 			case 0:		printf("timeout\n");
 					break;
-			default:	clientfd = accept(sockfd, (struct sockaddr *)&clientaddr, &clientaddrlen);
-					write(clientfd, "hello\n", 6);
-					close(clientfd);
-					break;
+		}
+
+		if (FD_ISSET(sockfd, &readfds)) {
+			clientfd = accept(sockfd,
+					(struct sockaddr *)&clientaddr,
+					&clientaddrlen);
+		}
+
+		if (clientfd && FD_ISSET(clientfd, &readfds)) {
+			char data[BUFLEN];
+			size_t nbytes;
+
+			nbytes = read(clientfd, data, BUFLEN-1);
+			data[nbytes+1] = 0;
+
+			if (! nbytes) {
+				close(clientfd);
+				clientfd=0;
+			} else {
+				printf("read %d bytes from client: %s\n",
+						nbytes,
+						data);
+			}
 		}
 	}
 
