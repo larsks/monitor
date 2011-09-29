@@ -2,12 +2,17 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <signal.h>
 
 #include <zmq.h>
 
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/select.h>
+
+void sighandler(int sig) {
+	fprintf(stderr, "caught signal %d.\n", sig);
+}
 
 int main(int argc, char **argv) {
 	void	*context = zmq_init(1);
@@ -19,6 +24,8 @@ int main(int argc, char **argv) {
 	items[0].socket = responder;
 	items[0].events = ZMQ_POLLIN;
 
+	signal(SIGINT, sighandler);
+
 	while (1) {
 		zmq_msg_t	request;
 		zmq_msg_t	reply;
@@ -26,10 +33,17 @@ int main(int argc, char **argv) {
 		int		msglen;
 		int		rc;
 
-		rc = zmq_poll(items, 1, 500);
+		printf("poll\n");
+		rc = zmq_poll(items, 1, 1000000);
+		printf("rc = %d\n", rc);
 
-		if (rc < 0)
+		if (rc == -1 && errno == EINTR) {
+			continue;
+		} else if (rc == -1) {
+			printf("errno=%d\n", errno);
+			perror("poll");
 			break;
+		}
 
 		if (rc) {
 			zmq_msg_init (&request);
@@ -44,10 +58,6 @@ int main(int argc, char **argv) {
 		} else {
 			printf("nothing to receive.\n");
 		}
-
-		// Do some 'work'
-		printf("sleep\n");
-		sleep (1);
 
 		// Send reply back to client
 		zmq_msg_init_size (&reply, 6);
