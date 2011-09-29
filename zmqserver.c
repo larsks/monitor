@@ -4,71 +4,58 @@
 #include <string.h>
 #include <signal.h>
 
-#include <zmq.h>
+#include <czmq.h>
 
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/select.h>
 
+int quit = 0;
+
 void sighandler(int sig) {
 	fprintf(stderr, "caught signal %d.\n", sig);
 }
 
-int main(int argc, char **argv) {
-	void	*context = zmq_init(1);
-	void	*responder = zmq_socket (context, ZMQ_REP);
-	zmq_pollitem_t
-		items [1];
+int handle_msg(zloop_t *loop, zmq_pollitem_t *item, void *data) {
+	char *msg;
 
-	zmq_bind (responder, "ipc:///tmp/mysocket");
-	items[0].socket = responder;
-	items[0].events = ZMQ_POLLIN;
+	printf("handling message.\n");
+	msg = zstr_recv(item->socket);
+	printf("received: %s\n", msg);
+	zstr_send(item->socket, "Thanks.");
+	return 0;
+}
+
+int idle(zloop_t *loop, zmq_pollitem_t *item, void *data) {
+	printf("idle...\n");
+}
+
+int main(int argc, char **argv) {
+	zctx_t	*context;
+	zloop_t	*loop;
+	zmq_pollitem_t
+		socket_poll;
+	void	*socket;
+	int	rc;
+
+	context = zctx_new();
+	assert(context != NULL);
+	socket = zsocket_new(context, ZMQ_REP);
+	assert(socket != NULL);
+
+	rc = zsocket_bind(socket, "ipc:///tmp/mysocket");
+	assert(rc == 0);
 
 	signal(SIGINT, sighandler);
 
-	while (1) {
-		zmq_msg_t	request;
-		zmq_msg_t	reply;
-		char		*msg;
-		int		msglen;
-		int		rc;
+	loop = zloop_new();
+	socket_poll.socket = socket;
+	socket_poll.events = ZMQ_POLLIN;
+	zloop_poller(loop, &socket_poll, handle_msg, NULL);
+	zloop_timer(loop, 1000, 0, idle, NULL);
 
-		printf("poll\n");
-		rc = zmq_poll(items, 1, 1000000);
-		printf("rc = %d\n", rc);
-
-		if (rc == -1 && errno == EINTR) {
-			continue;
-		} else if (rc == -1) {
-			printf("errno=%d\n", errno);
-			perror("poll");
-			break;
-		}
-
-		if (rc) {
-			zmq_msg_init (&request);
-			zmq_recv (responder, &request, 0);
-			msglen = zmq_msg_size(&request);
-			msg = (char *)malloc(msglen + 1);
-			memcpy(msg, zmq_msg_data(&request), msglen);
-			msg[msglen] = 0;
-			zmq_msg_close (&request);
-
-			printf("got: %s\n", msg);
-		} else {
-			printf("nothing to receive.\n");
-		}
-
-		// Send reply back to client
-		zmq_msg_init_size (&reply, 6);
-		memcpy (zmq_msg_data (&reply), "Thanks", 6);
-		printf("send\n");
-		zmq_send (responder, &reply, 0);
-		zmq_msg_close (&reply);
+	while (!quit) {
+		zloop_start(loop);
 	}
-	// We never get here but if we did, this would be how we end
-	zmq_close (responder);
-	zmq_term (context);
-	return 0;
 }
 
