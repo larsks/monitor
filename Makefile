@@ -2,6 +2,9 @@ prefix		= /usr/local
 exec_prefix	= $(prefix)
 bindir		= $(exec_prefix)/bin
 
+CPPFLAGS	= -I/opt/local/include
+LDFLAGS		= -L/opt/local/lib
+
 SRCS	= monitor.c \
 	  daemon.c
 OBJS	= $(SRCS:.c=.o)
@@ -17,3 +20,10 @@ install: all
 
 sockwatch: sockwatch.o
 	$(CC) $(LDFLAGS) -o $@ sockwatch.o $(LIBS)
+
+zmq: zmqserver zmqclient
+
+zmqserver: zmqserver.o
+	$(CC) $(LDFLAGS) -o $@ $< $(LIBS) -lzmq
+zmqclient: zmqclient.o
+	$(CC) $(LDFLAGS) -o $@ $< $(LIBS) -lzmq
