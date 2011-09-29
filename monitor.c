@@ -14,6 +14,12 @@
 #include <signal.h>
 #include <sys/wait.h>
 
+#include <czmq.h>
+
+#ifndef DEFAULT_SOCKET_URI
+#define DEFAULT_SOCKET_URI "ipc:///var/run/monitor/%s"
+#endif
+
 #define MAX_RETRIES	2
 
 #define	OPT_HELP	'h'
@@ -22,12 +28,33 @@
 #define OPT_RESTART	'R'
 #define OPT_MAXINTERVAL	'I'
 #define OPT_WORKDIR	'd'
+#define OPT_TAG		't'
+#define OPT_SOCKET	'S'
 
-#define OPTSTRING	"hp:fRI:d:"
+#define OPTSTRING	"hp:fRI:d:t:S:"
+
+#define STATE_STOPPED	0
+#define STATE_STARTED	1
+#define STATE_SLEEPING	2
+
+struct child_context {
+	int	state;
+
+	int	argc;
+	char	**argv;
+	pid_t	pid;
+
+	time_t	laststart;
+	time_t	interval;
+};
 
 char	*pidfile	= NULL;
 char	*workdir	= NULL;
 FILE	*pidfd		= NULL;
+
+char	*socket_path	= NULL;
+char	*tag		= NULL;
+
 int	foreground	= 0;
 int	alwaysrestart	= 0;
 int	maxinterval	= 60;
@@ -90,70 +117,90 @@ wait_for_exit () {
 	}
 }
 
-void loop (int argc, char **argv) {
+void start_child(struct child_context *cstate) {
+	child_pid = fork();
+
+	switch (child_pid) {
+		case -1:
+			syslog(LOG_ERR, "fork failed: %m");
+			break;
+		case 0:
+			syslog(LOG_INFO, "%s: starting.", cstate->argv[0]);
+			execvp(cstate->argv[0], cstate->argv);
+			break;
+
+		default:
+			break;
+	}
+}
+
+int periodic(zloop_t *loop, zmq_pollitem_t *item, void *data) {
+	pid_t 	pid;
 	int	status;
-	int	interval = 0;
-	time_t	lastrestart = 0;
+	struct child_context *cstate;
 
-	child_name = argv[0];
+	pid = waitpid(-1, &status, WNOHANG);
+	cstate = (struct child_context *)data;
 
-	// SIGHUP and SIGINT get passed on to the
-	// child process.
-	signal(SIGHUP, signal_and_restart);
-	signal(SIGINT, signal_and_restart);
+	syslog(LOG_DEBUG, "waitpid returned: %d", pid);
 
-	// SIGTERM and SIGQUIT will get passed on to 
-	// the child process and cause monitor to exit.
-	signal(SIGTERM, signal_and_quit);
-	signal(SIGQUIT, signal_and_quit);
-
-	// We get this when the child process
-	// dies.
-	signal(SIGCHLD, child_died);
-
-	syslog(LOG_DEBUG, "entering loop.");
-	while (! flag_quit) {
-		flag_child_died = 0;
-		flag_received_signal = 0;
-
-		child_pid = fork();
-
-		switch (child_pid) {
-			case -1:
-				syslog(LOG_ERR, "fork() failed: %m");
-				exit(1);
-			case 0:
-				syslog(LOG_INFO, "%s: starting", child_name);
-				execvp(argv[0], argv);
+	switch (pid) {
+		case -1:	start_child(cstate);
 				break;
-		}
+		case 0:		syslog(LOG_DEBUG, "still running");
+				break;
+		default:	syslog(LOG_ERR, "no longer running");
+				break;
+	}
+}
 
-		// only the parent gets this far.
-		while (! flag_quit) {
-			pause();
-			if (flag_child_died) break;
-		}
+int handle_msg(zloop_t *loop, zmq_pollitem_t *item, void *data) {
+	char *msg;
 
-		// If the child process exited with an error, activate
-		// exponential backup mechanism.
-		if (! flag_quit && ! flag_received_signal) {
-			if (time(NULL) - lastrestart < maxinterval) {
-				syslog(LOG_INFO, "%s: backing off for %d seconds.",
-						child_name, interval);
-				sleep(interval);
-				interval = interval >= maxinterval
-					? maxinterval
-					: 2*interval;
-			} else {
-				interval = 1;
-			}
-		}
+	printf("handling message.\n");
+	msg = zstr_recv(item->socket);
+	printf("received: %s", msg);
+	zstr_send(item->socket, "Thanks.");
+	return 0;
+}
 
-		lastrestart = time(NULL);
+void start_z_loop (int argc, char **argv) {
+	zctx_t		*context;
+	zloop_t		*loop;
+	zmq_pollitem_t	socket_poll = {0};
+	void		*socket = NULL;
+	int		rc;
+	struct child_context cstate;
+
+	memset(&cstate, 0, sizeof(struct child_context));
+	cstate.argc = argc;
+	cstate.argv = argv;
+	cstate.pid = 0;
+
+	context = zctx_new();
+	assert(context != NULL);
+
+	loop = zloop_new();
+	assert(loop != NULL);
+
+	rc = zloop_timer(loop, 1000, 0, periodic, (void *)&cstate);
+	assert(rc == 0);
+
+	if (socket_path) {
+		zmq_pollitem_t socket_poll;
+
+		socket = zsocket_new(context, ZMQ_REP);
+		assert(socket != NULL);
+
+		rc = zsocket_bind(socket, socket_path);
+		assert(rc == 0);
+
+		socket_poll.socket = socket;
+		socket_poll.events = ZMQ_POLLIN;
+		zloop_poller(loop, &socket_poll, handle_msg, (void *)&cstate);
 	}
 
-cleanup:
-	wait_for_exit();
+	zloop_start(loop);
 }
 
 int main (int argc, char **argv) {
@@ -179,6 +226,12 @@ int main (int argc, char **argv) {
 			case OPT_WORKDIR:
 				workdir = strdup(optarg);
 				break;
+			case OPT_TAG:
+				tag = strdup(optarg);
+				break;
+			case OPT_SOCKET:
+				socket_path = strdup(optarg);
+				break;
 
 			case '?':
 				usage(stderr);
@@ -187,6 +240,22 @@ int main (int argc, char **argv) {
 	}
 
 	openlog("monitor", LOG_PERROR, LOG_DAEMON);
+
+	// If the user has not provided an explicit socket AND
+	// they have provided a tag, we can compute the value
+	// of socket_path.  Otherwise there is no control
+	// socket.
+	if (socket_path == NULL && tag != NULL) {
+		char *sock_tmpl = getenv("MONITOR_SOCKET_URI")
+			? getenv("MONITOR_SOCKET_URI")
+			: DEFAULT_SOCKET_URI;
+
+		socket_path = (char *)malloc(strlen(sock_tmpl) + strlen(tag) + 2);
+		sprintf(socket_path, sock_tmpl, tag);
+	}
+
+	if (socket_path)
+		syslog(LOG_DEBUG, "using socket %s", socket_path);
 
 	// try to chdir to work directory.
 	if (workdir && chdir(workdir) != 0) {
@@ -212,7 +281,7 @@ int main (int argc, char **argv) {
 		fclose(pidfd);
 	}
 
-	loop(argc-optind, argv+optind);
+	start_z_loop(argc-optind, argv+optind);
 
 	if (pidfile)
 		unlink(pidfile);
