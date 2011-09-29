@@ -1,3 +1,14 @@
+=======
+Monitor
+=======
+
+------------------------
+A simple process monitor
+------------------------
+
+DESCRIPTION
+===========
+
 This is a simple process monitor for situations in which you
 would like to restart something when it fails but aren't looking
 for the complexity of solution such as DaemonTools_, Runit_,
@@ -15,7 +26,7 @@ it.
 Monitor uses an exponential backoff mechanism to prevent a failure from
 turning into a DOS attack.
 
-Options
+OPTIONS
 =======
 
 - -p *pidfile*
@@ -42,13 +53,13 @@ Options
 
   The default *interval* is 60.
 
-Logging
+LOGGING
 =======
 
 Monitor logs to the syslog ``DAEMON`` facility.  When running the for
 foreground, monitor will also log to stderr.
 
-Signals
+SIGNALS
 =======
 
 ``SIGINT`` and ``SIGHUP`` are ignored by montor but will be passed on to
@@ -58,8 +69,8 @@ the child process.
 Monitor will wait for the child process to exit and will send a ``SIGKILL``
 if the process does not exit after a few seconds.  Monitor will then exit.
 
-License
-=======
+AUTHOR
+======
 
 Copyright (c) 2011, Lars Kellogg-Stedman
 All rights reserved.
