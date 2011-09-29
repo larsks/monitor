@@ -12,23 +12,38 @@
 int main(int argc, char **argv) {
 	void	*context = zmq_init(1);
 	void	*responder = zmq_socket (context, ZMQ_REP);
+	zmq_pollitem_t
+		items [1];
 
 	zmq_bind (responder, "ipc:///tmp/mysocket");
+	items[0].socket = responder;
+	items[0].events = ZMQ_POLLIN;
 
 	while (1) {
 		zmq_msg_t	request;
 		zmq_msg_t	reply;
 		char		*msg;
+		int		msglen;
+		int		rc;
 
-		printf("init\n");
-		zmq_msg_init (&request);
-		printf("recv\n");
-		zmq_recv (responder, &request, 0);
-		msg = (char *)malloc(zmq_msg_size(&request) + 1);
-		memcpy(msg, zmq_msg_data(&request), zmq_msg_size(&request));
-		zmq_msg_close (&request);
+		rc = zmq_poll(items, 1, 500);
 
-		printf("got: %s\n", msg);
+		if (rc < 0)
+			break;
+
+		if (rc) {
+			zmq_msg_init (&request);
+			zmq_recv (responder, &request, 0);
+			msglen = zmq_msg_size(&request);
+			msg = (char *)malloc(msglen + 1);
+			memcpy(msg, zmq_msg_data(&request), msglen);
+			msg[msglen] = 0;
+			zmq_msg_close (&request);
+
+			printf("got: %s\n", msg);
+		} else {
+			printf("nothing to receive.\n");
+		}
 
 		// Do some 'work'
 		printf("sleep\n");
