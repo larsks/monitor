@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <string.h>
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -67,7 +68,7 @@ int main(int argc, char **argv) {
 				clientfd=0;
 			} else {
 				printf("read %d bytes from client: %s\n",
-						nbytes,
+						(int)nbytes,
 						data);
 			}
 		}
