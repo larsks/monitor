@@ -23,6 +23,9 @@ install: all
 	install -m 755 -d $(DESTDIR)$(bindir)
 	install -m 755 monitor $(DESTDIR)$(bindir)/monitor
 
+clean:
+	rm -f $(OBJS) monitor
+
 sockwatch: sockwatch.o
 	$(CC) $(LDFLAGS) -o $@ sockwatch.o $(LIBS)
 

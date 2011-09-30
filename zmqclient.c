@@ -17,7 +17,7 @@ int main(int argc, char **argv) {
 	char		*msg;
 	int		i;
 
-	zmq_connect (requester, "ipc:///tmp/mysocket");
+	zmq_connect (requester, "ipc://foo");
 
 	for (i=1; i<argc; i++) {
 		char	*msg = argv[i];
@@ -31,7 +31,13 @@ int main(int argc, char **argv) {
 
 		zmq_msg_init(&reply);
 		zmq_recv(requester, &reply, 0);
+		msglen = zmq_msg_size(&reply);
+		msg = (char *)malloc(msglen + 1);
+		memcpy(msg, zmq_msg_data(&reply), msglen);
+		msg[msglen] = 0;
 		zmq_msg_close(&reply);
+
+		printf("got: %s\n", msg);
 	}
 
 	zmq_close (requester);
