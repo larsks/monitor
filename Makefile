@@ -11,7 +11,9 @@ LIBS		= -lczmq
 #	$(CC) -o $@ $(CFLAGS) $(CPPFLAGS) $<
 
 SRCS	= monitor.c \
-	  daemon.c
+	  daemon.c \
+	  options.c
+
 OBJS	= $(SRCS:.c=.o)
 
 all: monitor

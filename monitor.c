@@ -16,17 +16,7 @@
 
 #include <czmq.h>
 
-#ifndef DEFAULT_SOCKET_URI
-#define DEFAULT_SOCKET_URI "ipc:///var/run/monitor/%s"
-#endif
-
-#ifndef DEFAULT_MAXINTERVAL
-#define DEFAULT_MAXINTERVAL 30
-#endif
-
-#ifndef DEFAULT_HEARTBEAT
-#define DEFAULT_HEARTBEAT 500
-#endif
+#include "options.h"
 
 #ifdef DEBUG
 #define _DEBUG(x) (x)
@@ -35,17 +25,6 @@
 #endif
 
 #define MAX_RETRIES	2
-
-#define	OPT_HELP	'h'
-#define OPT_PIDFILE	'p'
-#define OPT_FOREGROUND	'f'
-#define OPT_RESTART	'R'
-#define OPT_MAXINTERVAL	'I'
-#define OPT_WORKDIR	'd'
-#define OPT_TAG		't'
-#define OPT_SOCKET	'S'
-
-#define OPTSTRING	"hp:fRI:d:t:S:"
 
 #define STATE_STARTING	0
 #define STATE_STARTED	1
@@ -56,6 +35,7 @@
 
 struct child_context {
 	int	state;
+	int	target;
 
 	int	argc;
 	char	**argv;
@@ -69,25 +49,9 @@ struct child_context {
 	zloop_t	*loop;
 };
 
-char	*pidfile	= NULL;
-char	*workdir	= NULL;
-FILE	*pidfd		= NULL;
-
-char	*socket_path	= NULL;
-char	*tag		= NULL;
-
-int	foreground	= 0;
-int	alwaysrestart	= 0;
-int	maxinterval	= DEFAULT_MAXINTERVAL;
-int	heartbeat	= DEFAULT_HEARTBEAT;
-
 int	flag_child_died	= 0;
 int	flag_received_signal = 0;
 int	flag_quit	= 0;
-
-void usage (FILE *out) {
-	fprintf(out, "monitor: usage: monitor [-p pidfile] [-d dir] [-f] command [options]\n");
-}
 
 int start_child(struct child_context *cstate) {
 	pid_t pid = fork();
@@ -294,6 +258,9 @@ void start_z_loop (int argc, char **argv) {
 	struct child_context cstate;
 
 	memset(&cstate, 0, sizeof(struct child_context));
+
+	cstate.state = STATE_STOPPED;
+	cstate.target = STATE_STARTED;
 	cstate.argc = argc;
 	cstate.argv = argv;
 	cstate.pid = 0;
@@ -327,40 +294,10 @@ void start_z_loop (int argc, char **argv) {
 }
 
 int main (int argc, char **argv) {
-	int c;
+	int	optind;
+	FILE	*pidfd;
 
-	while (EOF != (c = getopt(argc, argv, OPTSTRING))) {
-		switch(c) {
-			case OPT_HELP:
-				usage(stdout);
-				exit(0);
-			case OPT_PIDFILE:
-				pidfile = strdup(optarg);
-				break;
-			case OPT_FOREGROUND:
-				foreground = 1;
-				break;
-			case OPT_RESTART:
-				alwaysrestart = 1;
-				break;
-			case OPT_MAXINTERVAL:
-				maxinterval = atoi(optarg);
-				break;
-			case OPT_WORKDIR:
-				workdir = strdup(optarg);
-				break;
-			case OPT_TAG:
-				tag = strdup(optarg);
-				break;
-			case OPT_SOCKET:
-				socket_path = strdup(optarg);
-				break;
-
-			case '?':
-				usage(stderr);
-				exit(2);
-		}
-	}
+	optind = parse_args(argc, argv);
 
 	openlog("monitor", LOG_PERROR, LOG_DAEMON);
 
@@ -369,45 +306,19 @@ int main (int argc, char **argv) {
 		exit(1);
 	}
 
-	// If the user has not provided an explicit socket AND
-	// they have provided a tag, we can compute the value
-	// of socket_path.  Otherwise there is no control
-	// socket.
-	if (socket_path == NULL && tag != NULL) {
-		char *sock_tmpl = getenv("MONITOR_SOCKET_URI")
-			? getenv("MONITOR_SOCKET_URI")
-			: DEFAULT_SOCKET_URI;
-
-		socket_path = (char *)malloc(strlen(sock_tmpl) + strlen(tag) + 2);
-		sprintf(socket_path, sock_tmpl, tag);
-	}
-
-	if (socket_path)
-		syslog(LOG_DEBUG, "using socket %s", socket_path);
-
-	// try to chdir to work directory.
-	if (workdir && chdir(workdir) != 0) {
-		syslog(LOG_ERR, "%s: failed to chdir: %m",
-				workdir);
-		exit(1);
-	}
-
-	// open (but don't write) pid file.  We open it here so that we can
-	// error out and exit if the pid file isn't writable.
-	if (pidfile) {
-		if ((pidfd = fopen(pidfile, "w")) == NULL) {
-			syslog(LOG_ERR, "failed to open pid file \"%s\": %m", pidfile);
-			exit (1);
-		}
-	}
+	setup_socket_path();
+	setup_work_dir();
+	pidfd = setup_pid_file();
 
 	if (! foreground)
 		daemon(1, 0);
 
-	if (pidfd) {
-		fprintf(pidfd, "%d\n", getpid());
-		fclose(pidfd);
-	}
+	write_pid_file(pidfd);
+
+	if (socket_path)
+		syslog(LOG_DEBUG, "using socket: %s", socket_path);
+	if (workdir)
+		syslog(LOG_DEBUG, "using directory: %s", workdir);
 
 	start_z_loop(argc-optind, argv+optind);
 
