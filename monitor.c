@@ -33,6 +33,8 @@
 #define STATE_SLEEPING	4
 #define STATE_QUITTING	5
 
+#define CONTEXT(x) ((struct child_context *)x)
+
 struct child_context {
 	int	state;
 	int	target;
@@ -147,26 +149,23 @@ int check_if_wake(struct child_context *cstate) {
 	return 0;
 }
 
-int periodic(zloop_t *loop, zmq_pollitem_t *item, void *data) {
+int periodic(zloop_t *loop, zmq_pollitem_t *item, void *cstate) {
 	pid_t 	pid;
 	int	rc = 0;
-	struct child_context *cstate;
 
-	cstate = (struct child_context *)data;
+	_DEBUG(syslog(LOG_DEBUG, "at top; state=%d", CONTEXT(cstate)->state));
 
-	_DEBUG(syslog(LOG_DEBUG, "at top; state=%d", cstate->state));
-
-	switch (cstate->state) {
+	switch (CONTEXT(cstate)->state) {
 		case STATE_STARTING:
-			rc = start_child(cstate);
+			rc = start_child(CONTEXT(cstate));
 			break;
 
 		case STATE_STARTED:
-			rc = check_if_running(cstate);
+			rc = check_if_running(CONTEXT(cstate));
 			break;
 
 		case STATE_STOPPING:
-			rc = stop_child(cstate);
+			rc = stop_child(CONTEXT(cstate));
 			break;
 
 		case STATE_STOPPED:
@@ -178,12 +177,12 @@ int periodic(zloop_t *loop, zmq_pollitem_t *item, void *data) {
 			break;
 
 		case STATE_QUITTING:
-			stop_child(cstate);
+			stop_child(CONTEXT(cstate));
 			rc = -1;
 			break;
 	}
 
-	_DEBUG(syslog(LOG_DEBUG, "at bottom; state=%d, rc=%d", cstate->state, rc));
+	_DEBUG(syslog(LOG_DEBUG, "at bottom; state=%d, rc=%d", CONTEXT(cstate)->state, rc));
 
 	return rc;
 }
