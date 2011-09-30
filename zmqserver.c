@@ -2,48 +2,60 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <signal.h>
 
-#include <zmq.h>
+#include <czmq.h>
 
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/select.h>
 
-int main(int argc, char **argv) {
-	void	*context = zmq_init(1);
-	void	*responder = zmq_socket (context, ZMQ_REP);
+int quit = 0;
 
-	zmq_bind (responder, "ipc:///tmp/mysocket");
+void sighandler(int sig) {
+	fprintf(stderr, "caught signal %d.\n", sig);
+}
 
-	while (1) {
-		zmq_msg_t	request;
-		zmq_msg_t	reply;
-		char		*msg;
+int handle_msg(zloop_t *loop, zmq_pollitem_t *item, void *data) {
+	char *msg;
 
-		printf("init\n");
-		zmq_msg_init (&request);
-		printf("recv\n");
-		zmq_recv (responder, &request, 0);
-		msg = (char *)malloc(zmq_msg_size(&request) + 1);
-		memcpy(msg, zmq_msg_data(&request), zmq_msg_size(&request));
-		zmq_msg_close (&request);
-
-		printf("got: %s\n", msg);
-
-		// Do some 'work'
-		printf("sleep\n");
-		sleep (1);
-
-		// Send reply back to client
-		zmq_msg_init_size (&reply, 6);
-		memcpy (zmq_msg_data (&reply), "Thanks", 6);
-		printf("send\n");
-		zmq_send (responder, &reply, 0);
-		zmq_msg_close (&reply);
-	}
-	// We never get here but if we did, this would be how we end
-	zmq_close (responder);
-	zmq_term (context);
+	printf("handling message.\n");
+	msg = zstr_recv(item->socket);
+	printf("received: %s\n", msg);
+	zstr_send(item->socket, "Thanks.");
 	return 0;
+}
+
+int idle(zloop_t *loop, zmq_pollitem_t *item, void *data) {
+	printf("idle...\n");
+}
+
+int main(int argc, char **argv) {
+	zctx_t	*context;
+	zloop_t	*loop;
+	zmq_pollitem_t
+		socket_poll;
+	void	*socket;
+	int	rc;
+
+	context = zctx_new();
+	assert(context != NULL);
+	socket = zsocket_new(context, ZMQ_REP);
+	assert(socket != NULL);
+
+	rc = zsocket_bind(socket, "ipc:///tmp/mysocket");
+	assert(rc == 0);
+
+	signal(SIGINT, sighandler);
+
+	loop = zloop_new();
+	socket_poll.socket = socket;
+	socket_poll.events = ZMQ_POLLIN;
+	zloop_poller(loop, &socket_poll, handle_msg, NULL);
+	zloop_timer(loop, 1000, 0, idle, NULL);
+
+	while (!quit) {
+		zloop_start(loop);
+	}
 }
 

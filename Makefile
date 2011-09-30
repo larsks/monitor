@@ -2,8 +2,13 @@ prefix		= /usr/local
 exec_prefix	= $(prefix)
 bindir		= $(exec_prefix)/bin
 
+CFLAGS		= -g
 CPPFLAGS	= -I/opt/local/include
 LDFLAGS		= -L/opt/local/lib
+LIBS		= -lczmq
+
+#%.o: %.c
+#	$(CC) -o $@ $(CFLAGS) $(CPPFLAGS) $<
 
 SRCS	= monitor.c \
 	  daemon.c
@@ -24,6 +29,6 @@ sockwatch: sockwatch.o
 zmq: zmqserver zmqclient
 
 zmqserver: zmqserver.o
-	$(CC) $(LDFLAGS) -o $@ $< $(LIBS) -lzmq
+	$(CC) $(LDFLAGS) -o $@ $< $(LIBS) -lczmq
 zmqclient: zmqclient.o
 	$(CC) $(LDFLAGS) -o $@ $< $(LIBS) -lzmq
