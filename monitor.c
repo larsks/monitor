@@ -33,9 +33,10 @@
 
 #define OPTSTRING	"hp:fRI:d:t:S:"
 
-#define STATE_STOPPED	0
-#define STATE_STARTED	1
+#define STATE_STARTED	0
+#define STATE_STOPPED	1
 #define STATE_SLEEPING	2
+#define STATE_QUIT	3
 
 struct child_context {
 	int	state;
@@ -43,9 +44,11 @@ struct child_context {
 	int	argc;
 	char	**argv;
 	pid_t	pid;
+	int	status;
 
 	time_t	laststart;
 	time_t	interval;
+	time_t	ticks;
 };
 
 char	*pidfile	= NULL;
@@ -81,77 +84,59 @@ void signal_and_restart (int sig) {
 	if (child_pid) kill(child_pid, sig);
 }
 
-void child_died(int sig) {
-	pid_t	pid;
-	int	status;
+int handle_child_start(struct child_context *cstate) {
+	pid_t pid = fork();
 
-	flag_child_died = 1;
+	cstate->pid = pid;
 
-	pid = wait(&status);
+	if (pid == -1) {
+		syslog(LOG_ERR, "fork failed: %m");
+		return -1;
+	} else if (pid == 0) {
+		syslog(LOG_INFO, "%s: starting.", cstate->argv[0]);
+		execvp(cstate->argv[0], cstate->argv);
 
-	if (status == 0) {
-		syslog(LOG_INFO, "%s: exited with status = %d",
-				child_name, WEXITSTATUS(status));
-		if (! alwaysrestart)
-			flag_quit = 1;
-	} else if (WIFEXITED(status)) {
-		syslog(LOG_ERR, "%s: exited with status = %d",
-				child_name, WEXITSTATUS(status));
-	} else if (WIFSIGNALED(status)) {
-		syslog(LOG_ERR, "%s: exited from signal = %d",
-				child_name, WTERMSIG(status));
+		// We should never get here.
+		return -1;
 	}
 
-	child_pid = 0;
+	return 0;
 }
 
-wait_for_exit () {
-	int retries = 0;
-
-	while (child_pid && ! flag_child_died) {
-		if (retries++ >= MAX_RETRIES)
-			kill(child_pid, SIGKILL);
-
-		syslog(LOG_INFO, "%s: waiting for exit.", child_name);
-		sleep(1);
-	}
-}
-
-void start_child(struct child_context *cstate) {
-	child_pid = fork();
-
-	switch (child_pid) {
-		case -1:
-			syslog(LOG_ERR, "fork failed: %m");
-			break;
-		case 0:
-			syslog(LOG_INFO, "%s: starting.", cstate->argv[0]);
-			execvp(cstate->argv[0], cstate->argv);
-			break;
-
-		default:
-			break;
-	}
+int handle_child_exit(struct child_context *cstate) {
+	cstate->state = STATE_QUIT;
 }
 
 int periodic(zloop_t *loop, zmq_pollitem_t *item, void *data) {
 	pid_t 	pid;
-	int	status;
+	int	rc = 0;
 	struct child_context *cstate;
 
-	pid = waitpid(-1, &status, WNOHANG);
 	cstate = (struct child_context *)data;
+	pid = waitpid(-1, &(cstate->status), WNOHANG);
 
-	syslog(LOG_DEBUG, "waitpid returned: %d", pid);
+	syslog(LOG_DEBUG, "pid = %d, state = %d", 
+			pid, cstate->state);
 
-	switch (pid) {
-		case -1:	start_child(cstate);
-				break;
-		case 0:		syslog(LOG_DEBUG, "still running");
-				break;
-		default:	syslog(LOG_ERR, "no longer running");
-				break;
+	if (cstate->state == STATE_STARTED) {
+		if (pid == -1) {
+			// no processes were running.
+			rc = handle_child_start(cstate);
+		} else if (pid > 0) {
+			// child process has died.
+			rc = handle_child_exit(cstate);
+		}
+	} else if (cstate->state == STATE_SLEEPING) {
+		cstate->ticks--;
+		if (! cstate->ticks)
+			cstate->state = STATE_STARTED;
+	} else if (cstate->state == STATE_STOPPED) {
+		// Nothing to do here.
+	} else if (cstate->state == STATE_QUIT) {
+		rc = -1;
 	}
+
+	return rc;
 }
 
 int handle_msg(zloop_t *loop, zmq_pollitem_t *item, void *data) {
@@ -240,6 +225,11 @@ int main (int argc, char **argv) {
 	}
 
 	openlog("monitor", LOG_PERROR, LOG_DAEMON);
+
+	if (! (argc-optind > 0)) {
+		syslog(LOG_ERR, "no command specified.");
+		exit(1);
+	}
 
 	// If the user has not provided an explicit socket AND
 	// they have provided a tag, we can compute the value
