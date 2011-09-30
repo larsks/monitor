@@ -12,7 +12,8 @@ LIBS		= -lczmq
 
 SRCS	= monitor.c \
 	  daemon.c \
-	  options.c
+	  options.c \
+	  context.c
 
 OBJS	= $(SRCS:.c=.o)
 
