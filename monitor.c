@@ -16,75 +16,18 @@
 
 #include <czmq.h>
 
-#ifndef DEFAULT_SOCKET_URI
-#define DEFAULT_SOCKET_URI "ipc:///var/run/monitor/%s"
+#include "options.h"
+#include "context.h"
+
+#ifdef DEBUG
+#define _DEBUG(x) (x)
+#else
+#define _DEBUG(x)
 #endif
 
 #define MAX_RETRIES	2
 
-#define	OPT_HELP	'h'
-#define OPT_PIDFILE	'p'
-#define OPT_FOREGROUND	'f'
-#define OPT_RESTART	'R'
-#define OPT_MAXINTERVAL	'I'
-#define OPT_WORKDIR	'd'
-#define OPT_TAG		't'
-#define OPT_SOCKET	'S'
-
-#define OPTSTRING	"hp:fRI:d:t:S:"
-
-#define STATE_STARTED	0
-#define STATE_STOPPED	1
-#define STATE_SLEEPING	2
-#define STATE_QUIT	3
-
-struct child_context {
-	int	state;
-
-	int	argc;
-	char	**argv;
-	pid_t	pid;
-	int	status;
-
-	time_t	laststart;
-	time_t	interval;
-	time_t	ticks;
-};
-
-char	*pidfile	= NULL;
-char	*workdir	= NULL;
-FILE	*pidfd		= NULL;
-
-char	*socket_path	= NULL;
-char	*tag		= NULL;
-
-int	foreground	= 0;
-int	alwaysrestart	= 0;
-int	maxinterval	= 60;
-
-int	flag_child_died	= 0;
-int	flag_received_signal = 0;
-int	flag_quit	= 0;
-
-pid_t	child_pid;
-char	*child_name	= NULL;
-
-void usage (FILE *out) {
-	fprintf(out, "monitor: usage: monitor [-p pidfile] [-d dir] [-f] command [options]\n");
-}
-
-void signal_and_quit (int sig) {
-	flag_quit = 1;
-	syslog(LOG_INFO, "caught signal %d.", sig);
-	if (child_pid) kill(child_pid, sig);
-}
-
-void signal_and_restart (int sig) {
-	syslog(LOG_INFO, "caught signal %d.", sig);
-	if (child_pid) kill(child_pid, sig);
-}
-
-int handle_child_start(struct child_context *cstate) {
+int start_child(struct child_context *cstate) {
 	pid_t pid = fork();
 
 	cstate->pid = pid;
@@ -100,52 +43,148 @@ int handle_child_start(struct child_context *cstate) {
 		return -1;
 	}
 
+	cstate->state = STATE_STARTED;
 	return 0;
 }
 
-int handle_child_exit(struct child_context *cstate) {
-	cstate->state = STATE_QUIT;
+int stop_child(struct child_context *cstate) {
+	kill(SIGTERM, cstate->pid);
+	return 0;
 }
 
-int periodic(zloop_t *loop, zmq_pollitem_t *item, void *data) {
+int stop_sleeping(zloop_t *loop, zmq_pollitem_t *item, void *data) {
+	struct child_context *cstate;
+	cstate = (struct child_context *)data;
+
+	syslog(LOG_DEBUG, "waking up from sleep");
+	cstate->state = STATE_STARTING;
+	return 0;
+}
+
+int check_if_running(struct child_context *cstate) {
+	pid_t	pid;
+	int	status;
+
+	pid = waitpid(-1, &status, WNOHANG);
+
+	if (pid != 0) {
+		if (pid == -1) {
+			syslog(LOG_ERR, "child is not running.");
+		} else {
+			if (WIFEXITED(status)) {
+				syslog(LOG_ERR, "child exited with status = %d", WEXITSTATUS(status));
+				if (WEXITSTATUS(status) == 0 && !alwaysrestart) {
+					cstate->state = STATE_QUITTING;
+					goto exit_func;
+				}
+			} else if (WIFSIGNALED(status)) {
+				syslog(LOG_ERR, "child exited from signal = %d", WTERMSIG(status));
+			} else {
+				syslog(LOG_ERR, "child exited for no good reason.");
+			}
+		}
+
+		if (time(NULL) - cstate->lastexit < maxinterval) {
+			cstate->state = STATE_SLEEPING;
+			cstate->interval = cstate->interval ? cstate->interval*2 : 1;
+
+			if (cstate->interval > maxinterval)
+				cstate->interval = maxinterval;
+
+			assert(cstate->interval > 0 && cstate->interval <= maxinterval);
+
+			syslog(LOG_ERR, "child is restarting too frequently; sleeping for %d seconds.",
+					cstate->interval);
+
+			zloop_timer(cstate->loop, cstate->interval*1000, 1, stop_sleeping, (void *)cstate);
+		} else {
+			cstate->interval = 0;
+			cstate->state = STATE_STARTING;
+		}
+		
+		cstate->lastexit = time(NULL);
+	}
+
+exit_func:
+	return 0;
+}
+
+int check_if_wake(struct child_context *cstate) {
+	cstate->ticks -= 1;
+
+	syslog(LOG_DEBUG, "sleeping, interval=%d, ticks=%d",
+			cstate->interval, cstate->ticks);
+
+	if (cstate->ticks == 0)
+		cstate->state = STATE_STARTING;
+
+	return 0;
+}
+
+int periodic(zloop_t *loop, zmq_pollitem_t *item, void *cstate) {
 	pid_t 	pid;
 	int	rc = 0;
-	struct child_context *cstate;
 
-	cstate = (struct child_context *)data;
-	pid = waitpid(-1, &(cstate->status), WNOHANG);
+	_DEBUG(syslog(LOG_DEBUG, "at top; state=%d", CONTEXT(cstate)->state));
 
-	syslog(LOG_DEBUG, "pid = %d, state = %d", 
-			pid, cstate->state);
+	switch (CONTEXT(cstate)->state) {
+		case STATE_STARTING:
+			rc = start_child(CONTEXT(cstate));
+			break;
 
-	if (cstate->state == STATE_STARTED) {
-		if (pid == -1) {
-			// no processes were running.
-			rc = handle_child_start(cstate);
-		} else if (pid > 0) {
-			// child process has died.
-			rc = handle_child_exit(cstate);
-		}
-	} else if (cstate->state == STATE_SLEEPING) {
-		cstate->ticks--;
-		if (! cstate->ticks)
-			cstate->state = STATE_STARTED;
-	} else if (cstate->state == STATE_STOPPED) {
-		// Nothing to do here.
-	} else if (cstate->state == STATE_QUIT) {
-		rc = -1;
+		case STATE_STARTED:
+			rc = check_if_running(CONTEXT(cstate));
+			break;
+
+		case STATE_STOPPING:
+			rc = stop_child(CONTEXT(cstate));
+			break;
+
+		case STATE_STOPPED:
+			// nothing to do here.
+			break;
+
+		case STATE_SLEEPING:
+			// nothing to do here.
+			break;
+
+		case STATE_QUITTING:
+			stop_child(CONTEXT(cstate));
+			rc = -1;
+			break;
 	}
+
+	_DEBUG(syslog(LOG_DEBUG, "at bottom; state=%d, rc=%d", CONTEXT(cstate)->state, rc));
 
 	return rc;
 }
 
 int handle_msg(zloop_t *loop, zmq_pollitem_t *item, void *data) {
 	char *msg;
+	struct child_context *cstate;
+
+	cstate = (struct child_context *)data;
 
 	printf("handling message.\n");
 	msg = zstr_recv(item->socket);
-	printf("received: %s", msg);
-	zstr_send(item->socket, "Thanks.");
+	
+	if (strcmp(msg, "status") == 0) {
+		zstr_send(item->socket, state_to_string(cstate->state));
+	} else if (strcmp(msg, "start") == 0) {
+		zstr_send(item->socket, "");
+		if (cstate->state != STATE_STARTED)
+			cstate->state = STATE_STARTING;
+	} else if (strcmp(msg, "stop") == 0) {
+		zstr_send(item->socket, "");
+		if (cstate->state != STATE_STOPPED)
+			cstate->state = STATE_STOPPING;
+	} else if (strcmp(msg, "quit") == 0) {
+		zstr_send(item->socket, "");
+		cstate->state = STATE_QUITTING;
+	} else {
+		zstr_send(item->socket, "?");
+	}
+
 	return 0;
 }
 
@@ -158,6 +197,9 @@ void start_z_loop (int argc, char **argv) {
 	struct child_context cstate;
 
 	memset(&cstate, 0, sizeof(struct child_context));
+
+	cstate.state = STATE_STOPPED;
+	cstate.target = STATE_STARTED;
 	cstate.argc = argc;
 	cstate.argv = argv;
 	cstate.pid = 0;
@@ -168,7 +210,9 @@ void start_z_loop (int argc, char **argv) {
 	loop = zloop_new();
 	assert(loop != NULL);
 
-	rc = zloop_timer(loop, 1000, 0, periodic, (void *)&cstate);
+	cstate.loop = loop;
+
+	rc = zloop_timer(loop, heartbeat, 0, periodic, (void *)&cstate);
 	assert(rc == 0);
 
 	if (socket_path) {
@@ -189,40 +233,10 @@ void start_z_loop (int argc, char **argv) {
 }
 
 int main (int argc, char **argv) {
-	int c;
+	int	optind;
+	FILE	*pidfd;
 
-	while (EOF != (c = getopt(argc, argv, OPTSTRING))) {
-		switch(c) {
-			case OPT_HELP:
-				usage(stdout);
-				exit(0);
-			case OPT_PIDFILE:
-				pidfile = strdup(optarg);
-				break;
-			case OPT_FOREGROUND:
-				foreground = 1;
-				break;
-			case OPT_RESTART:
-				alwaysrestart = 1;
-				break;
-			case OPT_MAXINTERVAL:
-				maxinterval = atoi(optarg);
-				break;
-			case OPT_WORKDIR:
-				workdir = strdup(optarg);
-				break;
-			case OPT_TAG:
-				tag = strdup(optarg);
-				break;
-			case OPT_SOCKET:
-				socket_path = strdup(optarg);
-				break;
-
-			case '?':
-				usage(stderr);
-				exit(2);
-		}
-	}
+	optind = parse_args(argc, argv);
 
 	openlog("monitor", LOG_PERROR, LOG_DAEMON);
 
@@ -231,45 +245,19 @@ int main (int argc, char **argv) {
 		exit(1);
 	}
 
-	// If the user has not provided an explicit socket AND
-	// they have provided a tag, we can compute the value
-	// of socket_path.  Otherwise there is no control
-	// socket.
-	if (socket_path == NULL && tag != NULL) {
-		char *sock_tmpl = getenv("MONITOR_SOCKET_URI")
-			? getenv("MONITOR_SOCKET_URI")
-			: DEFAULT_SOCKET_URI;
-
-		socket_path = (char *)malloc(strlen(sock_tmpl) + strlen(tag) + 2);
-		sprintf(socket_path, sock_tmpl, tag);
-	}
-
-	if (socket_path)
-		syslog(LOG_DEBUG, "using socket %s", socket_path);
-
-	// try to chdir to work directory.
-	if (workdir && chdir(workdir) != 0) {
-		syslog(LOG_ERR, "%s: failed to chdir: %m",
-				workdir);
-		exit(1);
-	}
-
-	// open (but don't write) pid file.  We open it here so that we can
-	// error out and exit if the pid file isn't writable.
-	if (pidfile) {
-		if ((pidfd = fopen(pidfile, "w")) == NULL) {
-			syslog(LOG_ERR, "failed to open pid file \"%s\": %m", pidfile);
-			exit (1);
-		}
-	}
+	setup_socket_path();
+	setup_work_dir();
+	pidfd = setup_pid_file();
 
 	if (! foreground)
 		daemon(1, 0);
 
-	if (pidfd) {
-		fprintf(pidfd, "%d\n", getpid());
-		fclose(pidfd);
-	}
+	write_pid_file(pidfd);
+
+	if (socket_path)
+		syslog(LOG_DEBUG, "using socket: %s", socket_path);
+	if (workdir)
+		syslog(LOG_DEBUG, "using directory: %s", workdir);
 
 	start_z_loop(argc-optind, argv+optind);
 

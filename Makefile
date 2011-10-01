@@ -11,7 +11,10 @@ LIBS		= -lczmq
 #	$(CC) -o $@ $(CFLAGS) $(CPPFLAGS) $<
 
 SRCS	= monitor.c \
-	  daemon.c
+	  daemon.c \
+	  options.c \
+	  context.c
+
 OBJS	= $(SRCS:.c=.o)
 
 all: monitor
@@ -22,6 +25,9 @@ monitor: $(OBJS)
 install: all
 	install -m 755 -d $(DESTDIR)$(bindir)
 	install -m 755 monitor $(DESTDIR)$(bindir)/monitor
+
+clean:
+	rm -f $(OBJS) monitor
 
 sockwatch: sockwatch.o
 	$(CC) $(LDFLAGS) -o $@ sockwatch.o $(LIBS)
