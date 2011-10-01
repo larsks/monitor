@@ -109,18 +109,6 @@ exit_func:
 	return 0;
 }
 
-int check_if_wake(struct child_context *cstate) {
-	cstate->ticks -= 1;
-
-	syslog(LOG_DEBUG, "sleeping, interval=%d, ticks=%d",
-			cstate->interval, cstate->ticks);
-
-	if (cstate->ticks == 0)
-		cstate->state = STATE_STARTING;
-
-	return 0;
-}
-
 int periodic(zloop_t *loop, zmq_pollitem_t *item, void *cstate) {
 	pid_t 	pid;
 	int	rc = 0;
@@ -199,7 +187,6 @@ void start_z_loop (int argc, char **argv) {
 	memset(&cstate, 0, sizeof(struct child_context));
 
 	cstate.state = STATE_STOPPED;
-	cstate.target = STATE_STARTED;
 	cstate.argc = argc;
 	cstate.argv = argv;
 	cstate.pid = 0;
@@ -250,7 +237,7 @@ int main (int argc, char **argv) {
 	pidfd = setup_pid_file();
 
 	if (! foreground)
-		daemon(1, 0);
+		background(1, 0);
 
 	write_pid_file(pidfd);
 
