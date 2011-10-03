@@ -89,11 +89,9 @@ static int do_fork(void)
                               Public Routines
 \*---------------------------------------------------------------------------*/
 
-int daemon(int nochdir, int noclose)
+int background(int nochdir, int noclose)
 {
     int status = 0;
-
-    openlog("daemonize", LOG_PID, LOG_DAEMON);
 
     /* Fork once to go into the background. */
     if((status = do_fork()) < 0 )
@@ -127,3 +125,4 @@ int daemon(int nochdir, int noclose)
 
     return status;
 }
+
