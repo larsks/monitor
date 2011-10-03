@@ -9,7 +9,7 @@
 #define STATE_STOPPING	3
 #define STATE_STOPPED	4
 #define STATE_SLEEPING	5
-#define STATE_QUITTING	6
+#define STATE_EXIT	6
 
 #define CONTEXT(x) ((struct child_context *)x)
 
@@ -22,6 +22,7 @@ struct child_context {
 
 	pid_t	pid;		// PID of child process.
 	int	status;		// Exit status (from waitpid()) of child process.
+	int	running;	// Are we running?
 
 	time_t	lastexit;	// time of last process exit.
 	time_t	interval;	// how long to wait until next start.

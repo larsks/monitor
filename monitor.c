@@ -49,16 +49,6 @@ void start_child(void *cstate) {
 	return;
 }
 
-int check_if_running(void *cstate) {
-	pid_t	pid;
-
-	pid = waitpid(CONTEXT(cstate)->pid,
-			&(CONTEXT(cstate)->status),
-			WNOHANG);
-
-	return pid;
-}
-
 int wakeup(zloop_t *loop, zmq_pollitem_t *item, void *cstate) {
 	if (CONTEXT(cstate)->state == STATE_SLEEPING) {
 		syslog(LOG_DEBUG, "waking up!");
@@ -81,12 +71,11 @@ void register_wakeup(void *cstate) {
 	assert(rc == 0);
 }
 
-void handle_exit(void *cstate, pid_t pid) {
+void handle_exit(struct child_context *cstate) {
 	int	status;
 	time_t	now;
 
 	syslog(LOG_DEBUG, "handle_exit");
-	assert(pid > 0);
 
 	now = time(NULL);
 	status = CONTEXT(cstate)->status;
@@ -119,16 +108,32 @@ void handle_exit(void *cstate, pid_t pid) {
 	CONTEXT(cstate)->lastexit = now;
 }
 
-void stop_child(void *cstate, int next_state) {
-	syslog(LOG_DEBUG, "stop_child");
+void check_if_running(struct child_context *cstate) {
+	pid_t	pid;
 
-	if (check_if_running(cstate) == 0) {
-		syslog(LOG_DEBUG, "sending SIGTERM");
-		kill(SIGTERM, CONTEXT(cstate)->pid);
-	} else {
-		syslog(LOG_INFO, "child has stopped.");
-		CONTEXT(cstate)->state = next_state;
-		CONTEXT(cstate)->interval = 0;
+	pid = waitpid(cstate->pid,
+			&(cstate->status),
+			WNOHANG);
+
+	switch(pid) {
+		case 0:
+			// still running.
+			cstate->running = 1;
+			break;
+		case -1:
+			cstate->running = 0;
+			break;
+		default:
+			cstate->running = 0;
+			handle_exit(cstate);
+			break;
+	}
+}
+
+void signal_child(struct child_context *cstate, int sig) {
+	if (cstate->state == STATE_STARTED) {
+		syslog(LOG_DEBUG, "sending signal %d", sig);
+		kill(CONTEXT(cstate)->pid, sig);
 	}
 }
 
@@ -142,29 +147,17 @@ int periodic(zloop_t *loop, zmq_pollitem_t *item, void *cstate) {
 
 	switch (CONTEXT(cstate)->state) {
 		case STATE_STARTED:
-			switch (CONTEXT(cstate)->want) {
-				case STATE_STOPPED:
-					stop_child(cstate, STATE_STOPPED);
-					break;
-				case STATE_QUITTING:
-					stop_child(cstate, STATE_QUITTING);
-					break;
-				case STATE_STARTED:
-					if ((pid = check_if_running(cstate)) != 0)
-						handle_exit(cstate, pid);
-					break;
-			}
+			check_if_running(CONTEXT(cstate));
 			break;
 
 		case STATE_STOPPED:
 			switch (CONTEXT(cstate)->want) {
-				case STATE_STOPPED:
-					break;
-				case STATE_QUITTING:
-					CONTEXT(cstate)->state = STATE_QUITTING;
-					break;
 				case STATE_STARTED:
 					start_child(cstate);
+					break;
+				case STATE_STOPPED:
+				case STATE_EXIT:
+					CONTEXT(cstate)->state = CONTEXT(cstate)->want;
 					break;
 			}
 			break;
@@ -172,17 +165,13 @@ int periodic(zloop_t *loop, zmq_pollitem_t *item, void *cstate) {
 		case STATE_SLEEPING:
 			switch (CONTEXT(cstate)->want) {
 				case STATE_STOPPED:
-					CONTEXT(cstate)->state = STATE_STOPPED;
-					CONTEXT(cstate)->interval = 0;
-					break;
-				case STATE_QUITTING:
-					CONTEXT(cstate)->state = STATE_QUITTING;
-					CONTEXT(cstate)->interval = 0;
+				case STATE_EXIT:
+					CONTEXT(cstate)->state = CONTEXT(cstate)->want;
 					break;
 			}
 			break;
 
-		case STATE_QUITTING:
+		case STATE_EXIT:
 			rc = -1;
 			break;
 	}
@@ -203,13 +192,21 @@ int handle_msg(zloop_t *loop, zmq_pollitem_t *item, void *cstate) {
 	if (strcmp(msg, "status") == 0) {
 		zstr_send(item->socket, state_to_string(CONTEXT(cstate)->state));
 	} else if (strcmp(msg, "stop") == 0) {
+		signal_child(CONTEXT(cstate), SIGTERM);
 		CONTEXT(cstate)->want = STATE_STOPPED;
+		CONTEXT(cstate)->interval = 0;
+		zstr_send(item->socket, "");
+	} else if (strcmp(msg, "kill") == 0) {
+		signal_child(CONTEXT(cstate), SIGKILL);
+		CONTEXT(cstate)->want = STATE_STOPPED;
+		CONTEXT(cstate)->interval = 0;
 		zstr_send(item->socket, "");
 	} else if (strcmp(msg, "start") == 0) {
 		CONTEXT(cstate)->want = STATE_STARTED;
 		zstr_send(item->socket, "");
 	} else if (strcmp(msg, "quit") == 0) {
-		CONTEXT(cstate)->want = STATE_QUITTING;
+		signal_child(CONTEXT(cstate), SIGTERM);
+		CONTEXT(cstate)->want = STATE_EXIT;
 		zstr_send(item->socket, "");
 	} else {
 		zstr_send(item->socket, "?");
@@ -242,6 +239,14 @@ void register_socket(void *cstate) {
 			&socket_poll, handle_msg, cstate);
 }
 
+void handle_sigint (int sig) {
+	syslog(LOG_DEBUG, "caught SIGINT");
+}
+
+void setup_signals() {
+	signal(SIGINT, handle_sigint);
+}
+
 void start_z_loop (int argc, char **argv) {
 	zctx_t			*context;
 	zloop_t			*loop;
@@ -271,7 +276,14 @@ void start_z_loop (int argc, char **argv) {
 		register_socket(&cstate);
 	}
 
-	zloop_start(loop);
+	setup_signals();
+
+	while (1) {
+		if (zloop_start(loop) == -1)
+			break;
+		else
+			cstate.want = STATE_EXIT;
+	}
 }
 
 int main (int argc, char **argv) {

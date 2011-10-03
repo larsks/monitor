@@ -24,7 +24,7 @@ char *state_to_string(int state) {
 			str = "sleeping";
 			break;
 
-		case STATE_QUITTING:
+		case STATE_EXIT:
 			str = "quitting";
 			break;
 	}
